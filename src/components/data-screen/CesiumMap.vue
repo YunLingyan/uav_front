@@ -26,7 +26,13 @@ let sphereGridCells = [] // 球形围栏网格数据
 let lineGridCells = [] // 线状围栏网格数据
 const onFenceConfirmCallback = ref(null)
 
-const emit = defineEmits(['point-selected', 'fence-confirm'])
+const emit = defineEmits(['point-selected', 'fence-confirm', 'box-select-start', 'box-select-end', 'get-view-bounds'])
+
+// 框选相关变量
+let isBoxSelecting = false
+let boxSelectHandler = null
+let boxSelectStartPos = null
+let boxSelectEntity = null
 
 function formatNum(v, digits) {
   if (v === null || v === undefined) return '--'
@@ -1569,6 +1575,198 @@ function getFencePoints() {
   return [...fencePoints]
 }
 
+// ==================== 地图框选功能 ====================
+
+function startBoxSelection() {
+  if (!viewer || isBoxSelecting) return
+  isBoxSelecting = true
+  emit('box-select-start')
+
+  // 禁用原有的地图点击
+  if (handler) {
+    handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK)
+  }
+
+  // 创建框选手势处理
+  boxSelectHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
+
+  // 鼠标按下
+  boxSelectHandler.setInputAction((movement) => {
+    boxSelectStartPos = movement.position.clone()
+  }, Cesium.ScreenSpaceEventType.LEFT_DOWN)
+
+  // 鼠标移动（拖拽）
+  boxSelectHandler.setInputAction((movement) => {
+    if (!boxSelectStartPos || !isBoxSelecting) return
+
+    // 清除之前的框选实体
+    if (boxSelectEntity) {
+      viewer.entities.remove(boxSelectEntity)
+    }
+
+    // 绘制新的框选矩形
+    const startX = boxSelectStartPos.x
+    const startY = boxSelectStartPos.y
+    const endX = movement.endPosition.x
+    const endY = movement.endPosition.y
+
+    // 计算矩形的四个角
+    const minX = Math.min(startX, endX)
+    const maxX = Math.max(startX, endX)
+    const minY = Math.min(startY, endY)
+    const maxY = Math.max(startY, endY)
+
+    // 转换屏幕坐标为经纬度
+    const bottomLeft = viewer.scene.globe.pick(
+      new Cesium.Cartesian2(minX, maxY),
+      viewer.scene
+    )
+    const topRight = viewer.scene.globe.pick(
+      new Cesium.Cartesian2(maxX, minY),
+      viewer.scene
+    )
+
+    if (bottomLeft && topRight) {
+      const bottomLeftCart = Cesium.Cartographic.fromCartesian(bottomLeft)
+      const topRightCart = Cesium.Cartographic.fromCartesian(topRight)
+
+      const west = Cesium.Math.toDegrees(bottomLeftCart.longitude)
+      const south = Cesium.Math.toDegrees(bottomLeftCart.latitude)
+      const east = Cesium.Math.toDegrees(topRightCart.longitude)
+      const north = Cesium.Math.toDegrees(topRightCart.latitude)
+
+      // 绘制框选矩形
+      boxSelectEntity = viewer.entities.add({
+        rectangle: {
+          coordinates: Cesium.Rectangle.fromDegrees(west, south, east, north),
+          material: Cesium.Color.fromCssColorString('#3b82f6').withAlpha(0.2),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('#3b82f6'),
+          outlineWidth: 2,
+        },
+      })
+    }
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE)
+
+  // 鼠标释放
+  boxSelectHandler.setInputAction((movement) => {
+    if (!boxSelectStartPos || !isBoxSelecting) return
+
+    const startX = boxSelectStartPos.x
+    const startY = boxSelectStartPos.y
+    const endX = movement.position.x
+    const endY = movement.position.y
+
+    // 判断是否有拖拽（框选）
+    const dragDistance = Math.sqrt(
+      Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2)
+    )
+
+    // 先停止框选状态
+    stopBoxSelection()
+
+    if (dragDistance > 10) {
+      // 框选操作：转换坐标并发送
+      const bottomLeft = viewer.scene.globe.pick(
+        new Cesium.Cartesian2(Math.min(startX, endX), Math.max(startY, endY)),
+        viewer.scene
+      )
+      const topRight = viewer.scene.globe.pick(
+        new Cesium.Cartesian2(Math.max(startX, endX), Math.min(startY, endY)),
+        viewer.scene
+      )
+
+      if (bottomLeft && topRight) {
+        const bottomLeftCart = Cesium.Cartographic.fromCartesian(bottomLeft)
+        const topRightCart = Cesium.Cartographic.fromCartesian(topRight)
+
+        const bounds = {
+          west: Cesium.Math.toDegrees(bottomLeftCart.longitude),
+          south: Cesium.Math.toDegrees(bottomLeftCart.latitude),
+          east: Cesium.Math.toDegrees(topRightCart.longitude),
+          north: Cesium.Math.toDegrees(topRightCart.latitude),
+        }
+
+        // 发送边界数据
+        emit('box-select-end', bounds)
+      }
+    }
+
+    // 清理状态
+    if (boxSelectEntity) {
+      viewer.entities.remove(boxSelectEntity)
+      boxSelectEntity = null
+    }
+    boxSelectStartPos = null
+  }, Cesium.ScreenSpaceEventType.LEFT_UP)
+}
+
+function stopBoxSelection() {
+  isBoxSelecting = false
+  emit('box-select-end')
+
+  // 清理框选处理器
+  if (boxSelectHandler) {
+    boxSelectHandler.destroy()
+    boxSelectHandler = null
+  }
+
+  // 恢复原有的地图点击
+  if (handler) {
+    handler.setInputAction((movement) => {
+      handleMouseClick(movement)
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
+  }
+}
+
+function getIsBoxSelecting() {
+  return isBoxSelecting
+}
+
+// 获取当前地图视图的边界范围
+function getViewBounds() {
+  if (!viewer) {
+    console.log('[CesiumMap] getViewBounds: viewer 不存在')
+    return null
+  }
+
+  const camera = viewer.camera
+  const canvas = viewer.scene.canvas
+
+  // 计算视图的四个角点
+  const leftBottom = Cesium.Cartesian2.fromElements(0, canvas.height)
+  const rightTop = Cesium.Cartesian2.fromElements(canvas.width, 0)
+
+  // 获取左下角经纬度
+  const bottomLeftCartesian = viewer.scene.globe.pick(
+    camera.getPickRay(leftBottom),
+    viewer.scene
+  )
+  // 获取右上角经纬度
+  const topRightCartesian = viewer.scene.globe.pick(
+    camera.getPickRay(rightTop),
+    viewer.scene
+  )
+
+  if (!bottomLeftCartesian || !topRightCartesian) {
+    console.log('[CesiumMap] getViewBounds: 无法获取边界坐标')
+    return null
+  }
+
+  const bottomLeftCart = Cesium.Cartographic.fromCartesian(bottomLeftCartesian)
+  const topRightCart = Cesium.Cartographic.fromCartesian(topRightCartesian)
+
+  const bounds = {
+    west: Cesium.Math.toDegrees(bottomLeftCart.longitude),
+    south: Cesium.Math.toDegrees(bottomLeftCart.latitude),
+    east: Cesium.Math.toDegrees(topRightCart.longitude),
+    north: Cesium.Math.toDegrees(topRightCart.latitude),
+  }
+
+  console.log('[CesiumMap] 获取视图边界:', bounds)
+  return bounds
+}
+
 // 航线颜色（统一使用绿色）
 const routeColor = { fill: '#10b981', outline: '#059669' }
 
@@ -1761,6 +1959,10 @@ defineExpose({
   clearRouteGrid,
   clearAllRouteGrids,
   isMapReady,
+  startBoxSelection,
+  stopBoxSelection,
+  getIsBoxSelecting,
+  getViewBounds,
 })
 
 onMounted(async () => {

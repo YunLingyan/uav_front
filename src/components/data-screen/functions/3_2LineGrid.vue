@@ -286,7 +286,7 @@ async function submit() {
             v-model.number="pipeForm.level"
             type="number"
             step="1"
-            min="14"
+            min="0"
             max="32"
             class="form-input"
             placeholder="建议 20-25"

@@ -11,6 +11,7 @@ import PathPlanning from './functions/4_PathPlanning.vue'
 import SpatialRelation from './functions/5_SpatialRelation.vue'
 import AirspaceGridQuery from './functions/6_AirspaceGridQuery.vue'
 import GridAggregation from './functions/7_Aggregation.vue'
+import DemGrid from './functions/8_DemGrid.vue'
 
 const props = defineProps({
   panelType: {
@@ -19,7 +20,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['showPoint', 'showGrid', 'show-line', 'show-polygon'])
+const emit = defineEmits(['showPoint', 'showGrid', 'show-line', 'show-polygon', 'get-view-bounds'])
 
 const services = [
   {
@@ -105,6 +106,16 @@ const services = [
     functions: [
       '多粒度混合格网建模',
       '倾斜摄影多源聚合网格查询',
+    ],
+  },
+  {
+    id: 'dem-grid-query',
+    name: 'DEM网格查询服务',
+    shortName: 'DEM网格',
+    icon: Database,
+    component: DemGrid,
+    functions: [
+      'DEM网格查询',
     ],
   },
 ]
@@ -244,6 +255,12 @@ function applyMapPointToActiveService(lon, lat, height) {
     }
   }
 
+  if (activeServiceId.value === 'dem-grid-query') {
+    if (typeof activeComponentRef.value.setPointFromMap === 'function') {
+      activeComponentRef.value.setPointFromMap(lon, lat, height)
+    }
+  }
+
   if (activeServiceId.value === 'path-planning' && activeFunctionName.value === 'A星航路规划') {
     if (typeof activeComponentRef.value.setPointFromMap === 'function') {
       activeComponentRef.value.setPointFromMap(lon, lat, height)
@@ -251,8 +268,51 @@ function applyMapPointToActiveService(lon, lat, height) {
   }
 }
 
+// 处理地图框选的边界参数
+function applyBoundsToActiveService(bounds) {
+  if (!activeComponentRef.value || !bounds) return
+
+  console.log('[ServicePanel] 收到地图框选边界:', bounds)
+
+  if (activeServiceId.value === 'dem-grid-query') {
+    if (typeof activeComponentRef.value.setBoundsFromViewport === 'function') {
+      activeComponentRef.value.setBoundsFromViewport(bounds)
+    }
+  }
+}
+
+// 处理框选开始事件
+function handleBoxSelectStart() {
+  emit('box-select-start')
+}
+
+// 处理框选结束事件
+function handleBoxSelectEnd() {
+  emit('box-select-end')
+}
+
+// 处理获取视图边界请求
+function handleGetViewBounds() {
+  emit('get-view-bounds')
+}
+
+// 设置视图边界到当前激活的服务
+function setViewBoundsToActiveService(bounds) {
+  if (!activeComponentRef.value || !bounds) return
+
+  console.log('[ServicePanel] 设置视图边界:', bounds)
+
+  if (activeServiceId.value === 'dem-grid-query') {
+    if (typeof activeComponentRef.value.setViewBounds === 'function') {
+      activeComponentRef.value.setViewBounds(bounds)
+    }
+  }
+}
+
 defineExpose({
   applyMapPointToActiveService,
+  applyBoundsToActiveService,
+  setViewBoundsToActiveService,
 })
 </script>
 
@@ -391,6 +451,7 @@ defineExpose({
               @show-grid="handleShowGrid"
               @show-line="handleShowLine"
               @show-polygon="handleShowPolygon"
+              @get-view-bounds="handleGetViewBounds"
             />
           </div>
         </div>

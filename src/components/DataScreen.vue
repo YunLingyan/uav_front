@@ -210,6 +210,48 @@ function handleInfoShowGrid(payload) {
     cesiumMapRef.value.drawGridBoundary(payload)
   }
 }
+
+// 处理地图框选开始
+function handleBoxSelectStart() {
+  console.log('[DataScreen] 地图框选开始')
+  if (cesiumMapRef.value && typeof cesiumMapRef.value.startBoxSelection === 'function') {
+    cesiumMapRef.value.startBoxSelection()
+  }
+}
+
+// 处理地图框选结束
+function handleBoxSelectEnd(bounds) {
+  console.log('[DataScreen] 地图框选结束，边界:', bounds)
+  if (cesiumMapRef.value && typeof cesiumMapRef.value.stopBoxSelection === 'function') {
+    cesiumMapRef.value.stopBoxSelection()
+  }
+
+  if (!bounds || !servicePanelRef.value) return
+
+  // 将边界信息传递给当前激活的服务
+  const panel = servicePanelRef.value
+  if (panel && typeof panel.applyBoundsToActiveService === 'function') {
+    panel.applyBoundsToActiveService(bounds)
+  }
+}
+
+// 处理获取视图边界请求
+function handleGetViewBounds() {
+  console.log('[DataScreen] 收到获取视图边界请求')
+  if (!cesiumMapRef.value || !servicePanelRef.value) return
+
+  const bounds = cesiumMapRef.value.getViewBounds()
+  if (!bounds) {
+    console.log('[DataScreen] 无法获取视图边界')
+    return
+  }
+
+  // 将边界信息传递给当前激活的服务
+  const panel = servicePanelRef.value
+  if (panel && typeof panel.setViewBoundsToActiveService === 'function') {
+    panel.setViewBoundsToActiveService(bounds)
+  }
+}
 </script>
 
 <template>
@@ -288,7 +330,13 @@ function handleInfoShowGrid(payload) {
 
     <!-- 主页面 - 网格化算子 -->
     <template v-if="currentPage === 'main'">
-      <CesiumMap ref="cesiumMapRef" @point-selected="handleMapPointSelected" />
+      <CesiumMap
+        ref="cesiumMapRef"
+        @point-selected="handleMapPointSelected"
+        @box-select-start="handleBoxSelectStart"
+        @box-select-end="handleBoxSelectEnd"
+        @get-view-bounds="handleGetViewBounds"
+      />
       <main class="app-main">
         <ServicePanel
           ref="servicePanelRef"
