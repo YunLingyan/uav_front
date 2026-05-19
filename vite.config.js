@@ -22,9 +22,10 @@ export default defineConfig({
       '/api': {
                //target: 'http://192.168.3.26:9997',/
                //target: 'http://localhost:9990',/
-               target: 'http://10.20.86.238:9997',
+               target: 'http://10.20.75.78:9997',
         changeOrigin: true,
       }
     }
   }
+  
 })

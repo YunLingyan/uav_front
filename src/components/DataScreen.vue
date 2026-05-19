@@ -13,6 +13,7 @@ const servicePanelRef = ref(null)
 const infoManagementPanelRef = ref(null)
 const cesiumMapRef = ref(null)
 const monitoringScreenRef = ref(null)
+const pendingEventVisualization = ref(null)
 
 const currentPage = ref('main') // 'main' | 'monitoring' | 'info'
 
@@ -211,6 +212,14 @@ function handleInfoShowGrid(payload) {
   }
 }
 
+function handleVisualizeEvent(payload) {
+  console.log('[DataScreen] 收到异常事件可视化请求:', payload)
+  pendingEventVisualization.value = payload || null
+  if (payload) {
+    currentPage.value = 'monitoring'
+  }
+}
+
 // 处理地图框选开始
 function handleBoxSelectStart() {
   console.log('[DataScreen] 地图框选开始')
@@ -355,7 +364,9 @@ function handleGetViewBounds() {
       <MonitoringScreen
         ref="monitoringScreenRef"
         :route-data="monitoredRoutesData"
+        :event-visualization="pendingEventVisualization"
         @switch_page="handleSwitchPage"
+        @visualize-event="handleVisualizeEvent"
       />
     </div>
 
@@ -366,6 +377,7 @@ function handleGetViewBounds() {
         :monitored-route-ids="monitoredRouteIds"
         @route-monitor-start="handleRouteMonitorStart"
         @route-monitor-stop="handleRouteMonitorStop"
+        @visualize-event="handleVisualizeEvent"
       />
     </div>
   </div>

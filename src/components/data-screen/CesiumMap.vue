@@ -1957,6 +1957,96 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
   }
 }
 
+function drawEventVisualization(payload) {
+  if (!viewer || !payload) return
+
+  const removeIds = [
+    'event-visual-point',
+    'event-visual-point-label',
+    'event-visual-grid',
+    'event-visual-warning-area',
+  ]
+  removeIds.forEach((id) => {
+    const entity = viewer.entities.getById(id)
+    if (entity) viewer.entities.remove(entity)
+  })
+
+  const point = payload.eventPoint || {}
+  const lon = Number(point.lon)
+  const lat = Number(point.lat)
+  const height = Number(point.height || 0)
+
+  if (Number.isFinite(lon) && Number.isFinite(lat)) {
+    viewer.entities.add({
+      id: 'event-visual-point',
+      position: Cesium.Cartesian3.fromDegrees(lon, lat, Number.isFinite(height) ? height : 0),
+      point: {
+        pixelSize: 12,
+        color: Cesium.Color.RED,
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 3,
+      },
+    })
+    viewer.entities.add({
+      id: 'event-visual-point-label',
+      position: Cesium.Cartesian3.fromDegrees(lon, lat, Number.isFinite(height) ? height : 0),
+      label: {
+        text: '事件位置',
+        font: '14px sans-serif',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 2,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        pixelOffset: new Cesium.Cartesian2(0, -18),
+      },
+    })
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lon, lat, Math.max(1200, (Number.isFinite(height) ? height : 0) + 1200)),
+      duration: 1.2,
+    })
+  }
+
+  const grid = payload.grid || {}
+  const bounds = grid.bounds || (grid.center && grid.center.length >= 4 ? { west: grid.center[0], south: grid.center[1], east: grid.center[2], north: grid.center[3] } : null)
+  if (bounds && Number.isFinite(bounds.west) && Number.isFinite(bounds.south) && Number.isFinite(bounds.east) && Number.isFinite(bounds.north)) {
+    viewer.entities.add({
+      id: 'event-visual-grid',
+      rectangle: {
+        coordinates: Cesium.Rectangle.fromDegrees(bounds.west, bounds.south, bounds.east, bounds.north),
+        material: Cesium.Color.fromCssColorString('#3b82f6').withAlpha(0.18),
+        outline: true,
+        outlineColor: Cesium.Color.fromCssColorString('#3b82f6'),
+        outlineWidth: 2,
+      },
+    })
+  }
+
+  const warningArea = payload.warningArea || {}
+  const radiusMeters = Number(warningArea.radiusMeters ?? warningArea.radius ?? warningArea.warningRadiusMeters)
+  if (Number.isFinite(lon) && Number.isFinite(lat) && Number.isFinite(radiusMeters) && radiusMeters > 0) {
+    viewer.entities.add({
+      id: 'event-visual-warning-area',
+      position: Cesium.Cartesian3.fromDegrees(lon, lat, Number.isFinite(height) ? height : 0),
+      ellipse: {
+        semiMajorAxis: radiusMeters,
+        semiMinorAxis: radiusMeters,
+        material: Cesium.Color.fromCssColorString('#f59e0b').withAlpha(0.12),
+        outline: true,
+        outlineColor: Cesium.Color.fromCssColorString('#f59e0b').withAlpha(0.8),
+      },
+    })
+  }
+}
+
+function clearEventVisualization() {
+  if (!viewer) return
+  ;['event-visual-point', 'event-visual-point-label', 'event-visual-grid', 'event-visual-warning-area'].forEach((id) => {
+    const entity = viewer.entities.getById(id)
+    if (entity) viewer.entities.remove(entity)
+  })
+}
+
 defineExpose({
   flyToPoint,
   clearCenterPoint,
@@ -1985,6 +2075,8 @@ defineExpose({
   stopBoxSelection,
   getIsBoxSelecting,
   getViewBounds,
+  drawEventVisualization,
+  clearEventVisualization,
 })
 
 onMounted(async () => {

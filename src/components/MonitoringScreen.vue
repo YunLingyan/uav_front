@@ -16,7 +16,11 @@ const props = defineProps({
   routeData: {
     type: Array,
     default: () => []
-  }
+  },
+  eventVisualization: {
+    type: Object,
+    default: null,
+  },
 })
 
 const networkStatus = computed(() => {
@@ -73,6 +77,14 @@ watch(() => props.routeData, () => {
   drawAllRoutes()
 }, { deep: true })
 
+watch(() => props.eventVisualization, async (payload) => {
+  if (payload) {
+    await drawEventVisualization(payload)
+  } else {
+    clearEventVisualization()
+  }
+}, { deep: true, immediate: true })
+
 // 绘制所有航线
 function drawAllRoutes() {
   const routes = props.routeData || []
@@ -91,6 +103,95 @@ function drawAllRoutes() {
 function clearRouteGrid(routeId) {
   if (cesiumMapRef.value && typeof cesiumMapRef.value.clearRouteGrid === 'function') {
     cesiumMapRef.value.clearRouteGrid(routeId)
+  }
+}
+
+function clearEventVisualization() {
+  if (cesiumMapRef.value && typeof cesiumMapRef.value.clearEventVisualization === 'function') {
+    cesiumMapRef.value.clearEventVisualization()
+  }
+}
+
+async function fetchGridBoundaryByCode(gridCode) {
+  if (!gridCode) return null
+  const headers = new Headers()
+  headers.append('X-API-Key', import.meta.env.VITE_API_KEY || '')
+  headers.append('Content-Type', 'application/json')
+  const resp = await fetch('/api/multiSource/basicGrid/getGridBoundaryByCode', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ gridCode }),
+  })
+  const data = await resp.json().catch(() => null)
+  if (!resp.ok || data?.status !== 'success' || !data?.data) return null
+  return data.data
+}
+
+function normalizeGridBoundary(grid) {
+  if (!grid) return null
+  return {
+    code: grid.code || grid.gridCode || '',
+    center: grid.center || null,
+    bounds: {
+      west: grid.west,
+      east: grid.east,
+      south: grid.south,
+      north: grid.north,
+      top: grid.top ?? 0,
+      bottom: grid.bottom ?? 0,
+    },
+  }
+}
+
+async function drawWarningSampleGrids(warningArea) {
+  const codes = Array.isArray(warningArea?.sampleGrids) ? warningArea.sampleGrids : []
+  const limit = Number(warningArea?.sampleGridCount) || codes.length
+  const sampleCells = []
+
+  for (const code of codes.slice(0, limit)) {
+    const cell = await fetchGridBoundaryByCode(code)
+    const normalized = normalizeGridBoundary(cell)
+    if (normalized) sampleCells.push(normalized)
+  }
+
+  if (sampleCells.length > 0 && cesiumMapRef.value && typeof cesiumMapRef.value.drawGridBoundary === 'function') {
+    cesiumMapRef.value.drawGridBoundary({
+      cells: sampleCells.map(cell => ({
+        code: cell.code,
+        center: cell.center,
+        bounds: cell.bounds,
+        color: '#f59e0b',
+        level: warningArea?.gridLevel,
+      }))
+    })
+  }
+}
+
+async function drawEventVisualization(payload) {
+  if (!cesiumMapRef.value) return
+
+  if (payload?.eventGrid && typeof cesiumMapRef.value.drawGridBoundary === 'function') {
+    cesiumMapRef.value.drawGridBoundary({
+      code: payload.eventGrid.code,
+      center: payload.eventGrid.center,
+      bounds: {
+        west: payload.eventGrid.minlon,
+        east: payload.eventGrid.maxlon,
+        south: payload.eventGrid.minlat,
+        north: payload.eventGrid.maxlat,
+        top: payload.eventGrid.top,
+        bottom: payload.eventGrid.bottom,
+      },
+    })
+  }
+
+  await drawWarningSampleGrids(payload?.warningArea)
+
+  if (typeof cesiumMapRef.value.drawEventVisualization === 'function') {
+    cesiumMapRef.value.drawEventVisualization({
+      eventPoint: payload?.eventPoint,
+      warningArea: payload?.warningArea,
+    })
   }
 }
 
