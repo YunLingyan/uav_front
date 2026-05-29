@@ -20,10 +20,10 @@ const isLoading = ref(false)
 const infoModules = [
   {
     id: 'aircraft-status',
-    name: '飞行器状态',
-    shortName: '飞行器状态',
+    name: '飞行器管理',
+    shortName: '飞行器管理',
     icon: Plane,
-    status: 'pending',
+    status: 'developing',
   },
   {
     id: 'event-management',
@@ -34,10 +34,10 @@ const infoModules = [
   },
   {
     id: 'qualification-approval',
-    name: '飞行资质审批',
-    shortName: '飞行资质审批',
+    name: '飞行资质管理',
+    shortName: '飞行资质管理',
     icon: FileCheck,
-    status: 'pending',
+    status: 'developing',
   },
   {
     id: 'route-info',
@@ -59,6 +59,38 @@ const infoModules = [
 const routeList = ref([])
 const routeError = ref('')
 
+// 飞行器管理数据
+const aircraftList = ref([
+  {
+    id: 'aircraft-001',
+    name: '大疆',
+    model: 'M3T',
+    transponderNo: '11111',
+    bindTime: '2024-12-02 10:06:50',
+    owner: '张三',
+  },
+])
+const aircraftFilters = ref({
+  deviceName: '',
+  bindTime: [],
+})
+const aircraftSearchLoading = ref(false)
+const aircraftError = ref('')
+const showAircraftDialog = ref(false)
+const aircraftForm = ref({
+  id: '',
+  name: '',
+  model: '',
+  transponderNo: '',
+  bindTime: '',
+  owner: '',
+})
+const aircraftSelected = ref(null)
+const aircraftCurrentPage = ref(1)
+const aircraftPageSize = ref(10)
+const aircraftTotalCount = ref(0)
+const aircraftPaginatedList = ref([])
+
 // 电子围栏数据
 const fenceList = ref([])
 const fenceError = ref('')
@@ -67,6 +99,22 @@ const fenceError = ref('')
 const currentPage = ref(1)
 const pageSize = ref(10)
 const totalCount = ref(0)
+
+// 飞行资质管理数据
+const qualificationList = ref([
+  { id: '145', userId: '145', userName: '飞行用户9788', userEmail: 'ahkf555@outlook.com', phoneNumber: '18888888888', gender: '男', avatar: '', createdAt: '2023-08-28' },
+  { id: '146', userId: '146', userName: '飞行用户4687', userEmail: 'ident45@outlook.com', phoneNumber: '18974365228', gender: '男', avatar: '', createdAt: '2023-08-28' },
+])
+const qualificationFilters = ref({ phoneNumber: '', createdAt: '' })
+const qualificationSearchLoading = ref(false)
+const qualificationCurrentPage = ref(1)
+const qualificationPageSize = ref(10)
+const qualificationTotalCount = ref(qualificationList.value.length)
+const qualificationPaginatedList = ref([])
+const qualificationForm = ref({ userId: '', userName: '', userEmail: '', phoneNumber: '', gender: '男', createdAt: '' })
+const showQualificationDialog = ref(false)
+const qualificationEditingId = ref('')
+const qualificationSelectedIds = ref([])
 
 // 详情数据
 const selectedRoute = ref(null)
@@ -403,6 +451,199 @@ function goBack() {
   selectedFence.value = null
 }
 
+function openAircraftDialog() {
+  aircraftSelected.value = null
+  aircraftForm.value = {
+    id: '',
+    name: '',
+    model: '',
+    transponderNo: '',
+    bindTime: '',
+    owner: '',
+  }
+  showAircraftDialog.value = true
+}
+
+function closeAircraftDialog() {
+  showAircraftDialog.value = false
+}
+
+function saveAircraft() {
+  const form = { ...aircraftForm.value }
+  if (!form.name || !form.model || !form.transponderNo) return
+
+  const record = {
+    id: form.id || `aircraft-${Date.now()}`,
+    name: form.name,
+    model: form.model,
+    transponderNo: form.transponderNo,
+    bindTime: form.bindTime || new Date().toISOString().slice(0, 19).replace('T', ' '),
+    owner: form.owner || '-',
+  }
+
+  if (aircraftSelected.value?.id) {
+    aircraftList.value = aircraftList.value.map(item => item.id === aircraftSelected.value.id ? record : item)
+  } else {
+    aircraftList.value.unshift(record)
+  }
+
+  aircraftSelected.value = record
+  aircraftTotalCount.value = aircraftList.value.length
+  updateAircraftPagination()
+  showAircraftDialog.value = false
+}
+
+function editAircraft(item) {
+  aircraftSelected.value = item
+  aircraftForm.value = { ...item }
+  showAircraftDialog.value = true
+}
+
+function searchAircraft() {
+  aircraftSearchLoading.value = true
+  aircraftError.value = ''
+
+  const keyword = (aircraftFilters.value.deviceName || '').trim().toLowerCase()
+  const bindRange = aircraftFilters.value.bindTime || []
+
+  const filtered = aircraftList.value.filter(item => {
+    const matchName = !keyword || [item.name, item.model, item.transponderNo, item.owner].some(v => String(v || '').toLowerCase().includes(keyword))
+    const bindTimeValue = item.bindTime ? new Date(item.bindTime.replace(/-/g, '/')).getTime() : null
+    const startTime = bindRange[0] ? new Date(bindRange[0]).getTime() : null
+    const endTime = bindRange[1] ? new Date(bindRange[1]).getTime() : null
+    const matchTime = (!startTime || !bindTimeValue || bindTimeValue >= startTime) && (!endTime || !bindTimeValue || bindTimeValue <= endTime + 86399999)
+    return matchName && matchTime
+  })
+
+  aircraftTotalCount.value = filtered.length
+  aircraftPaginatedList.value = filtered.slice(0, aircraftPageSize.value)
+  aircraftCurrentPage.value = 1
+  setTimeout(() => {
+    aircraftSearchLoading.value = false
+  }, 120)
+}
+
+function resetAircraftSearch() {
+  aircraftFilters.value = { deviceName: '', bindTime: [] }
+  aircraftTotalCount.value = aircraftList.value.length
+  aircraftCurrentPage.value = 1
+  updateAircraftPagination()
+}
+
+function updateAircraftPagination() {
+  aircraftTotalCount.value = aircraftList.value.length
+  const start = (aircraftCurrentPage.value - 1) * aircraftPageSize.value
+  aircraftPaginatedList.value = aircraftList.value.slice(start, start + aircraftPageSize.value)
+}
+
+function prevAircraftPage() {
+  if (aircraftCurrentPage.value > 1) {
+    aircraftCurrentPage.value--
+    updateAircraftPagination()
+  }
+}
+
+function nextAircraftPage() {
+  const totalPages = Math.max(1, Math.ceil(aircraftTotalCount.value / aircraftPageSize.value))
+  if (aircraftCurrentPage.value < totalPages) {
+    aircraftCurrentPage.value++
+    updateAircraftPagination()
+  }
+}
+
+function getAircraftModuleName() {
+  return infoModules.find(m => m.id === 'aircraft-status')?.name || '飞行器管理'
+}
+
+function updateQualificationPagination() {
+  qualificationTotalCount.value = qualificationList.value.length
+  const start = (qualificationCurrentPage.value - 1) * qualificationPageSize.value
+  qualificationPaginatedList.value = qualificationList.value.slice(start, start + qualificationPageSize.value)
+}
+
+updateQualificationPagination()
+
+function searchQualification() {
+  qualificationSearchLoading.value = true
+  const keyword = (qualificationFilters.value.phoneNumber || '').trim().toLowerCase()
+  const dateValue = (qualificationFilters.value.createdAt || '').trim()
+  const filtered = qualificationList.value.filter(item => {
+    const matchPhone = !keyword || [item.userId, item.userName, item.phoneNumber].some(v => String(v || '').toLowerCase().includes(keyword))
+    const matchDate = !dateValue || String(item.createdAt || '').includes(dateValue)
+    return matchPhone && matchDate
+  })
+  qualificationTotalCount.value = filtered.length
+  qualificationPaginatedList.value = filtered.slice(0, qualificationPageSize.value)
+  qualificationCurrentPage.value = 1
+  setTimeout(() => { qualificationSearchLoading.value = false }, 120)
+}
+
+function addQualification() {
+  qualificationEditingId.value = ''
+  qualificationForm.value = { userId: '', userName: '', userEmail: '', phoneNumber: '', gender: '男', createdAt: '' }
+  showQualificationDialog.value = true
+}
+
+function isValidQualificationEmail(email) {
+  return typeof email === 'string' && email.includes('@') && email.includes('.com')
+}
+
+function saveQualification() {
+  const form = { ...qualificationForm.value }
+  if (!form.userId || !form.userName || !form.phoneNumber) return
+  if (!isValidQualificationEmail(form.userEmail)) {
+    window.alert('请输入正确的邮箱格式，必须包含 @ 和 .com')
+    return
+  }
+  const record = { id: qualificationEditingId.value || `${form.userId}-${Date.now()}`, ...form }
+  if (qualificationEditingId.value) {
+    qualificationList.value = qualificationList.value.map(item => item.id === qualificationEditingId.value ? record : item)
+  } else {
+    qualificationList.value.unshift(record)
+  }
+  showQualificationDialog.value = false
+  qualificationSelectedIds.value = []
+  updateQualificationPagination()
+}
+
+function deleteSelectedQualifications() {
+  if (!qualificationSelectedIds.value.length) return
+  qualificationList.value = qualificationList.value.filter(item => !qualificationSelectedIds.value.includes(item.id))
+  qualificationSelectedIds.value = []
+  updateQualificationPagination()
+}
+
+function closeQualificationDialog() {
+  showQualificationDialog.value = false
+}
+
+function toggleQualificationSelection(id) {
+  qualificationSelectedIds.value = qualificationSelectedIds.value.includes(id)
+    ? qualificationSelectedIds.value.filter(item => item !== id)
+    : [...qualificationSelectedIds.value, id]
+}
+
+function resetQualificationSearch() {
+  qualificationFilters.value = { phoneNumber: '', createdAt: '' }
+  qualificationCurrentPage.value = 1
+  updateQualificationPagination()
+}
+
+function prevQualificationPage() {
+  if (qualificationCurrentPage.value > 1) {
+    qualificationCurrentPage.value--
+    updateQualificationPagination()
+  }
+}
+
+function nextQualificationPage() {
+  const totalPages = Math.max(1, Math.ceil(qualificationTotalCount.value / qualificationPageSize.value))
+  if (qualificationCurrentPage.value < totalPages) {
+    qualificationCurrentPage.value++
+    updateQualificationPagination()
+  }
+}
+
 // 点击模块
 function selectModule(module) {
   if (module.status === 'pending') return
@@ -412,6 +653,12 @@ function selectModule(module) {
   if (module.id === 'route-info') {
     currentView.value = 'list'
     fetchRoutes()
+  } else if (module.id === 'aircraft-status') {
+    currentView.value = 'list'
+    updateAircraftPagination()
+  } else if (module.id === 'qualification-approval') {
+    currentView.value = 'list'
+    updateQualificationPagination()
   } else if (module.id === 'fence-info') {
     currentView.value = 'list'
     fetchFences()
@@ -668,8 +915,72 @@ function formatEventTypeLabel(type) {
     low_battery: '低电量事件',
     deviation: '偏航事件',
     accident: '事故事件',
+    manual: '手动事件',
   }
   return map[type] || type || '-'
+}
+
+function addAnomalyEvent(payload) {
+  if (!payload) return
+  const { routeId, routeName, eventType, position, responseData } = payload
+  const severity = responseData?.severity || {}
+  const eventGrid = responseData?.eventGrid || {}
+  const warningArea = responseData?.warningArea || null
+  const actions = responseData?.actions || []
+  const landingPlan = responseData?.landingPlan || null
+  const control = responseData?.control || null
+  const persistence = responseData?.persistence || null
+  const timeline = responseData?.timeline || []
+
+  const displayType = formatEventTypeLabel(eventType)
+  const positionText = Array.isArray(position)
+    ? position.map(v => typeof v === 'number' ? v.toFixed(6) : v).join(', ')
+    : '未知位置'
+
+  const newEvent = {
+    id: responseData?.eventId || `event-${Date.now()}`,
+    name: `${routeName || routeId || '未知航线'} · ${displayType}`,
+    status: displayType,
+    time: new Date().toLocaleString('zh-CN'),
+    source: 'simulation',
+    routeId,
+    routeName: routeName || routeId || '未知航线',
+    detail: {
+      displayType,
+      eventType,
+      eventTimeText: new Date().toLocaleString('zh-CN'),
+      positionText,
+      gridLevel: warningArea?.gridLevel ?? '-',
+      speedText: '-',
+      linkLostText: '-',
+      batteryText: '-',
+      deviationText: '-',
+      homeText: '-',
+      landingSiteText: '-',
+      rescueText: '-',
+      controlText: formatControlText(control),
+      persistText: formatPersistenceText(persistence),
+    },
+    form: null,
+    severity,
+    eventGrid,
+    warningArea,
+    actions,
+    landingPlan,
+    control,
+    persistence,
+    timeline,
+    judgementResult: {
+      status: 'success',
+      data: responseData,
+    },
+  }
+
+  eventList.value.unshift(newEvent)
+  selectedEvent.value = newEvent
+  eventJudgementResult.value = newEvent.judgementResult
+  activeModuleId.value = 'event-management'
+  currentView.value = 'event-dashboard'
 }
 
 function formatPhaseLabel(phase) {
@@ -763,7 +1074,8 @@ onMounted(() => {
 })
 
 defineExpose({
-  goBack
+  goBack,
+  addAnomalyEvent,
 })
 </script>
 
@@ -791,6 +1103,176 @@ defineExpose({
 
     <!-- 主内容区 -->
     <main class="main-content">
+      <!-- 飞行器管理视图 -->
+      <template v-if="activeModuleId === 'aircraft-status'">
+        <div class="breadcrumb">
+          <span class="breadcrumb-item">智绘平台</span>
+          <span class="breadcrumb-separator">/</span>
+          <span class="breadcrumb-item">信息管理系统</span>
+          <span class="breadcrumb-separator">/</span>
+          <span class="breadcrumb-item current">飞行器管理</span>
+        </div>
+
+        <div class="aircraft-view">
+          <section class="aircraft-filter-card">
+            <div class="filter-inline">
+              <div class="form-item inline-item device-item">
+                <label>设备名称</label>
+                <input v-model="aircraftFilters.deviceName" type="text" placeholder="请输入设备名称" />
+              </div>
+              <div class="form-item inline-item time-item">
+                <label>绑定时间</label>
+                <input v-model="aircraftFilters.bindTime[0]" type="date" />
+              </div>
+              <div class="filter-actions inline-actions">
+                <button class="btn-filter primary" @click="searchAircraft" :disabled="aircraftSearchLoading">
+                  <Loader2 v-if="aircraftSearchLoading" :size="14" class="spin" />
+                  <span v-else>搜索</span>
+                </button>
+                <button class="btn-filter" @click="resetAircraftSearch">重置</button>
+                <button class="btn-filter add" @click="openAircraftDialog">新增</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="aircraft-table-card">
+            <div class="table-container">
+              <table class="data-table aircraft-table">
+                <thead>
+                  <tr>
+                    <th>无人机名称</th>
+                    <th>无人机型号</th>
+                    <th>飞控序列号</th>
+                    <th>绑定时间</th>
+                    <th>责任人</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in aircraftPaginatedList" :key="item.id">
+                    <td class="col-name">{{ item.name }}</td>
+                    <td>{{ item.model }}</td>
+                    <td class="col-id">{{ item.transponderNo }}</td>
+                    <td>{{ item.bindTime }}</td>
+                    <td>{{ item.owner }}</td>
+                    <td class="col-actions">
+                      <button class="btn-action view" @click="editAircraft(item)">修改</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="pagination">
+                <span class="page-info">共 {{ aircraftTotalCount }} 条，第 {{ aircraftCurrentPage }} / {{ Math.max(1, Math.ceil(aircraftTotalCount / aircraftPageSize)) }} 页</span>
+                <div class="page-buttons">
+                  <button class="btn-page" @click="prevAircraftPage" :disabled="aircraftCurrentPage <= 1">上一页</button>
+                  <button class="btn-page" @click="nextAircraftPage" :disabled="aircraftCurrentPage >= Math.max(1, Math.ceil(aircraftTotalCount / aircraftPageSize))">下一页</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </template>
+
+      <!-- 飞行资质管理视图 -->
+      <template v-if="activeModuleId === 'qualification-approval'">
+        <div class="breadcrumb">
+          <span class="breadcrumb-item">智绘平台</span>
+          <span class="breadcrumb-separator">/</span>
+          <span class="breadcrumb-item">信息管理系统</span>
+          <span class="breadcrumb-separator">/</span>
+          <span class="breadcrumb-item current">飞行资质管理</span>
+        </div>
+
+        <div class="qualification-view">
+          <section class="qualification-filter-card">
+            <div class="qualification-filter-row">
+              <div class="form-item qualification-field phone-field">
+                <label>手机号</label>
+                <input v-model="qualificationFilters.phoneNumber" type="text" placeholder="请输入手机号" />
+              </div>
+              <div class="form-item qualification-field time-field">
+                <label>创建时间</label>
+                <input v-model="qualificationFilters.createdAt" type="date" />
+              </div>
+              <div class="qualification-actions">
+                <button class="btn-filter primary" @click="searchQualification" :disabled="qualificationSearchLoading">
+                  <Loader2 v-if="qualificationSearchLoading" :size="14" class="spin" />
+                  <span v-else>搜索</span>
+                </button>
+                <button class="btn-filter add" @click="addQualification">添加</button>
+                <button class="btn-filter danger" @click="deleteSelectedQualifications" :disabled="!qualificationSelectedIds.length">删除</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="qualification-table-card">
+            <div class="table-container">
+              <table class="data-table qualification-table">
+                <thead>
+                  <tr>
+                    <th style="width: 56px;">选择</th>
+                    <th>用户ID</th>
+                    <th>用户名称</th>
+                    <th>用户邮箱</th>
+                    <th>手机号码</th>
+                    <th>用户性别</th>
+                    <th>创建时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in qualificationPaginatedList" :key="item.id">
+                    <td><input type="checkbox" :checked="qualificationSelectedIds.includes(item.id)" @change="toggleQualificationSelection(item.id)" /></td>
+                    <td class="col-id">{{ item.userId }}</td>
+                    <td class="col-name">{{ item.userName }}</td>
+                    <td>{{ item.userEmail }}</td>
+                    <td>{{ item.phoneNumber }}</td>
+                    <td>{{ item.gender }}</td>
+                    <td>{{ item.createdAt }}</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="pagination qualification-pagination">
+                <span class="page-info">共 {{ qualificationTotalCount }} 条</span>
+                <div class="page-buttons">
+                  <button class="btn-page" @click="prevQualificationPage" :disabled="qualificationCurrentPage <= 1">上一页</button>
+                  <button class="btn-page current-page">{{ qualificationCurrentPage }}</button>
+                  <button class="btn-page" @click="nextQualificationPage" :disabled="qualificationCurrentPage >= Math.max(1, Math.ceil(qualificationTotalCount / qualificationPageSize))">下一页</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </template>
+
+      <div v-if="showQualificationDialog" class="dialog-mask" @click.self="closeQualificationDialog">
+        <div class="dialog-card qualification-dialog">
+          <div class="dialog-header">
+            <h3>添加飞行资质</h3>
+            <button class="dialog-close" @click="closeQualificationDialog"><X :size="18" /></button>
+          </div>
+          <div class="dialog-body">
+            <div class="form-grid two-col">
+              <div class="form-item"><label>用户ID</label><input v-model="qualificationForm.userId" type="text" placeholder="请输入用户ID" /></div>
+              <div class="form-item"><label>用户名称</label><input v-model="qualificationForm.userName" type="text" placeholder="请输入用户名称" /></div>
+            </div>
+            <div class="form-grid two-col">
+              <div class="form-item"><label>用户邮箱</label><input v-model="qualificationForm.userEmail" type="text" placeholder="请输入用户邮箱" /></div>
+              <div class="form-item"><label>手机号码</label><input v-model="qualificationForm.phoneNumber" type="text" placeholder="请输入手机号码" /></div>
+            </div>
+            <div class="form-grid two-col">
+              <div class="form-item"><label>用户性别</label><input v-model="qualificationForm.gender" type="text" placeholder="请输入用户性别" /></div>
+              <div class="form-item"><label>创建时间</label><input v-model="qualificationForm.createdAt" type="date" /></div>
+            </div>
+          </div>
+          <div class="dialog-footer">
+            <button class="btn-dialog cancel" @click="closeQualificationDialog">取消</button>
+            <button class="btn-dialog primary" @click="saveQualification">确认</button>
+          </div>
+        </div>
+      </div>
+
       <!-- 航线信息管理视图 -->
       <template v-if="activeModuleId === 'route-info'">
         <!-- 面包屑导航 -->
@@ -1084,16 +1566,12 @@ defineExpose({
           <section class="event-panel event-list-panel">
             <div class="panel-header panel-header-row">
               <h3>事件列表</h3>
-              <div class="panel-actions">
-                <button class="btn-panel add" @click="openEventDialog">添加</button>
-                <button class="btn-panel delete" :disabled="!selectedEvent" @click="deleteSelectedEvent">删除</button>
-              </div>
             </div>
             <div class="panel-body list-body compact-body">
               <div v-if="eventList.length === 0" class="placeholder-card active-card compact-card">
                 <AlertTriangle :size="28" class="placeholder-icon" />
                 <h4>暂无事件</h4>
-                <p>点击右上角“添加”，填写事件信息后会在这里显示。</p>
+                <p>触发异常模拟后，事件会自动显示在这里。</p>
               </div>
               <button
                 v-for="item in eventList"
@@ -1119,77 +1597,64 @@ defineExpose({
                 <p>选中左侧事件后，这里将展示事件位置、类型、时间与处置信息。</p>
               </div>
               <div v-else class="info-card">
+                <div v-if="selectedEvent.source === 'simulation'" class="info-row event-source-row"><span>事件来源</span><strong class="source-sim">异常模拟</strong></div>
+                <div v-if="selectedEvent.routeName" class="info-row"><span>航线名称</span><strong>{{ selectedEvent.routeName }}</strong></div>
                 <div class="info-row"><span>事件类型</span><strong>{{ selectedEvent.detail.displayType }}</strong></div>
                 <div class="info-row"><span>发生时间</span><strong>{{ selectedEvent.detail.eventTimeText }}</strong></div>
                 <div class="info-row"><span>位置</span><strong>{{ selectedEvent.detail.positionText }}</strong></div>
-                <div class="info-row"><span>网格层级</span><strong>{{ selectedEvent.detail.gridLevel }}</strong></div>
-                <div class="info-row"><span>飞行速度</span><strong>{{ selectedEvent.form?.飞行速度 || selectedEvent.detail.speedText }}</strong></div>
-                <div class="info-row"><span>失联时长</span><strong>{{ selectedEvent.form?.失联时长 || selectedEvent.detail.linkLostText }}</strong></div>
-                <div class="info-row"><span>电量</span><strong>{{ selectedEvent.form?.电量 || selectedEvent.detail.batteryText }}</strong></div>
-                <div class="info-row"><span>偏航距离</span><strong>{{ selectedEvent.form?.偏航距离 || selectedEvent.detail.deviationText }}</strong></div>
-                <div class="info-row"><span>返回点</span><strong>{{ selectedEvent.detail.homeText }}</strong></div>
-                <div class="info-row"><span>备降点</span><strong>{{ selectedEvent.detail.landingSiteText }}</strong></div>
-                <div class="info-row"><span>救援资源</span><strong>{{ selectedEvent.detail.rescueText }}</strong></div>
-                <div class="panel-action-center">
-                  <button class="btn-judge" :disabled="eventJudgementLoading" @click="executeEventJudgement">
-                    {{ eventJudgementLoading ? '研判中...' : '执行研判' }}
-                  </button>
-                </div>
+                <div v-if="selectedEvent.severity" class="info-row risk-row"><span>风险等级</span><strong :class="getSeverityClass(selectedEvent.severity.level)">{{ selectedEvent.severity.label || '-' }}</strong></div>
+                <div v-if="selectedEvent.severity" class="info-row"><span>风险分值</span><strong>{{ selectedEvent.severity.score ?? '-' }}</strong></div>
+                <div v-if="selectedEvent.actions && selectedEvent.actions.length" class="info-row"><span>处理建议</span><strong>{{ formatActionsText(selectedEvent.actions) }}</strong></div>
+                <div v-if="selectedEvent.landingPlan" class="info-row"><span>返航方案</span><strong>{{ formatLandingPlanText(selectedEvent.landingPlan) }}</strong></div>
+                <div v-if="selectedEvent.control" class="info-row"><span>临时围栏</span><strong>{{ formatControlText(selectedEvent.control) }}</strong></div>
+                <template v-if="selectedEvent.source !== 'simulation'">
+                  <div class="info-row"><span>网格层级</span><strong>{{ selectedEvent.detail.gridLevel }}</strong></div>
+                  <div class="info-row"><span>飞行速度</span><strong>{{ selectedEvent.form?.飞行速度 || selectedEvent.detail.speedText }}</strong></div>
+                  <div class="info-row"><span>失联时长</span><strong>{{ selectedEvent.form?.失联时长 || selectedEvent.detail.linkLostText }}</strong></div>
+                  <div class="info-row"><span>电量</span><strong>{{ selectedEvent.form?.电量 || selectedEvent.detail.batteryText }}</strong></div>
+                  <div class="info-row"><span>偏航距离</span><strong>{{ selectedEvent.form?.偏航距离 || selectedEvent.detail.deviationText }}</strong></div>
+                  <div class="info-row"><span>返回点</span><strong>{{ selectedEvent.detail.homeText }}</strong></div>
+                  <div class="info-row"><span>备降点</span><strong>{{ selectedEvent.detail.landingSiteText }}</strong></div>
+                  <div class="info-row"><span>救援资源</span><strong>{{ selectedEvent.detail.rescueText }}</strong></div>
+                </template>
               </div>
             </div>
           </section>
 
-          <section class="event-panel event-result-panel">
-            <div class="panel-header panel-header-row">
-              <h3>研判结果</h3>
-            </div>
-            <div class="panel-body detail-body compact-body">
-              <div v-if="eventJudgementLoading" class="placeholder-card compact-card">
-                <Loader2 :size="28" class="placeholder-icon spin" />
-                <h4>正在研判</h4>
-                <p>请稍候，正在向后端获取研判结果。</p>
-              </div>
-              <div v-else-if="!eventJudgementResult" class="placeholder-card compact-card">
-                <Shield :size="28" class="placeholder-icon" />
-                <h4>研判结果区域</h4>
-                <p>点击“执行研判”后，这里会显示后端返回的处置结果。</p>
-              </div>
-              <div v-else-if="eventJudgementResult.status === 'error'" class="info-card error-card">
-                <div class="result-banner error">研判失败</div>
-                <div class="info-row"><span>提示</span><strong>{{ eventJudgementResult.message }}</strong></div>
-              </div>
-              <div v-else class="info-card result-card">
-                <div class="result-banner success">研判完成</div>
-                <div class="info-row"><span>事件编号</span><strong>{{ eventJudgementResult?.data?.eventId || '-' }}</strong></div>
-                <div class="info-row"><span>事件类型</span><strong>{{ formatEventTypeLabel(eventJudgementResult?.data?.eventType) }}</strong></div>
-                <div class="info-row risk-row"><span>风险等级</span><strong :class="getSeverityClass(eventJudgementResult?.data?.severity?.level)">{{ eventJudgementResult?.data?.severity?.label || '-' }}</strong></div>
-                <div class="info-row"><span>风险分值</span><strong>{{ eventJudgementResult?.data?.severity?.score ?? '-' }}</strong></div>
-                <div class="info-row"><span>研判阶段</span><strong>{{ formatPhaseLabel(eventJudgementResult?.data?.phase) }}</strong></div>
-                <div class="info-row"><span>处置结论</span><strong>{{ eventJudgementResult?.message || '已完成研判' }}</strong></div>
-                <div class="info-row"><span>事件位置</span><strong>{{ formatEventGridText(eventJudgementResult?.data?.eventGrid) }}</strong></div>
-                <div class="info-row"><span>警戒范围</span><strong>{{ formatWarningAreaText(eventJudgementResult?.data?.warningArea) }}</strong></div>
-                <div class="info-row"><span>处置动作</span><strong>{{ formatActionsText(eventJudgementResult?.data?.actions) }}</strong></div>
-                <div class="info-row"><span>返航方案</span><strong>{{ formatLandingPlanText(eventJudgementResult?.data?.landingPlan) }}</strong></div>
-                <div class="info-row"><span>临时围栏</span><strong>{{ formatControlText(eventJudgementResult?.data?.control) }}</strong></div>
-                <div class="info-row"><span>台账状态</span><strong>{{ formatPersistenceText(eventJudgementResult?.data?.persistence) }}</strong></div>
-                <div class="result-actions">
-                  <button class="btn-result secondary" type="button" @click="handleVisualizeEvent">可视化</button>
-                  <button class="btn-result danger" type="button" @click="eventJudgementResult = null; eventVisualizationPayload = null">清除</button>
-                </div>
-              </div>
-            </div>
-          </section>
         </div>
       </template>
 
       <!-- 其他模块 -->
       <template v-else>
-        <div class="coming-soon">
-          <h3>{{ getModuleName() }}</h3>
-          <p>该模块正在开发中，敬请期待...</p>
-        </div>
       </template>
     </main>
+
+    <div v-if="showAircraftDialog" class="dialog-mask" @click.self="closeAircraftDialog">
+      <div class="dialog-card aircraft-dialog">
+        <div class="dialog-header">
+          <h3>{{ aircraftSelected ? '修改飞行器' : '新增飞行器' }}</h3>
+          <button class="dialog-close" @click="closeAircraftDialog"><X :size="18" /></button>
+        </div>
+        <div class="dialog-body">
+          <div class="form-grid two-col">
+            <div class="form-item"><label>无人机名称</label><input v-model="aircraftForm.name" type="text" placeholder="请输入无人机名称" /></div>
+            <div class="form-item"><label>无人机型号</label><input v-model="aircraftForm.model" type="text" placeholder="请输入无人机型号" /></div>
+          </div>
+          <div class="form-grid two-col">
+            <div class="form-item"><label>飞控序列号</label><input v-model="aircraftForm.transponderNo" type="text" placeholder="请输入飞控序列号" /></div>
+            <div class="form-item"><label>绑定时间</label><input v-model="aircraftForm.bindTime" type="datetime-local" /></div>
+          </div>
+          <div class="form-grid two-col">
+            <div class="form-item"><label>责任人</label><input v-model="aircraftForm.owner" type="text" placeholder="请输入责任人" /></div>
+            <div class="form-item"><label>记录编号</label><input v-model="aircraftForm.id" type="text" placeholder="新增时自动生成" readonly /></div>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button class="btn-dialog cancel" @click="closeAircraftDialog">取消</button>
+          <button class="btn-dialog primary" @click="saveAircraft">确认</button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="showEventDialog" class="dialog-mask" @click.self="closeEventDialog">
       <div class="dialog-card event-dialog">
@@ -1497,6 +1962,143 @@ defineExpose({
 .btn-refresh:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.aircraft-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.aircraft-filter-card,
+.aircraft-table-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.filter-inline {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 16px;
+  padding: 16px;
+}
+
+.filter-inline .form-item {
+  margin-bottom: 0;
+}
+
+.inline-item {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.device-item {
+  width: 240px;
+}
+
+.time-item {
+  width: 180px;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  padding-left: 24px;
+}
+
+.qualification-filter-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 16px;
+  padding: 16px;
+}
+
+.qualification-field {
+  margin-bottom: 0;
+}
+
+.phone-field {
+  width: 220px;
+}
+
+.time-field {
+  width: 200px;
+}
+
+.qualification-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.btn-filter.danger {
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+.qualification-table th,
+.qualification-table td {
+  text-align: center;
+}
+
+.qualification-pagination {
+  justify-content: flex-end;
+}
+
+.current-page {
+  background: #2563eb;
+  color: #fff;
+  border-color: #2563eb;
+}
+
+.btn-filter.danger {
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+.btn-filter {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 6px;
+  border: 1px solid #dbe4f0;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+}
+
+.btn-filter.primary {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+
+.btn-filter.add {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 12px;
+  padding: 16px;
+}
+
+.aircraft-table th,
+.aircraft-table td {
+  text-align: center;
+}
+
+.aircraft-dialog .dialog-body {
+  padding: 20px;
 }
 
 .header-actions {
@@ -1901,7 +2503,7 @@ defineExpose({
 /* 异常事件管理视图 */
 .event-management-view {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr 2fr;
   gap: 12px;
   align-items: stretch;
   min-height: calc(100vh - 150px);
@@ -2183,6 +2785,14 @@ defineExpose({
   background: rgba(96, 165, 250, 0.15);
 }
 
+.source-sim {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
 .compact-card {
   min-height: 180px;
 }
@@ -2219,15 +2829,9 @@ defineExpose({
 }
 
 .coming-soon h3 {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: 20px;
   color: #1e293b;
-}
-
-.coming-soon p {
-  margin: 0;
-  color: #64748b;
-  font-size: 14px;
 }
 
 .dialog-mask {
@@ -2255,6 +2859,19 @@ defineExpose({
 .event-dialog .dialog-body {
   padding: 20px;
   overflow-y: auto;
+}
+
+.qualification-dialog .dialog-body {
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.qualification-dialog .dialog-footer {
+  padding: 16px 24px 24px;
+}
+
+.qualification-dialog .form-grid {
+  padding: 0;
 }
 
 .dialog-header {

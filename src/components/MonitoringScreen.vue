@@ -21,6 +21,48 @@ const props = defineProps({
   },
 })
 
+const emit = defineEmits(['switch_page', 'visualize-event', 'start-event-simulation', 'stop-event-simulation', 'anomaly-triggered'])
+
+const isSimulationModalVisible = ref(false)
+const selectedSimulationRouteIds = ref([])
+const simulationTimers = ref([])
+const simulationParamsMap = ref({})
+
+const simulationParams = ref({
+  user: {
+    level: 14,
+    eventTime: Date.now(),
+    warningRadiusMeters: 500,
+    maxRouteReturnGrids: 300,
+    maxRouteCheckGrids: 500,
+    persist: true,
+    cruisingSpeed: 15,
+    groundRescueSpeed: 12,
+  },
+  auto: {
+    eventType: 'lost_contact',
+    telemetry: {
+      speed: 16,
+      battery: 28,
+      linkLostSeconds: 90,
+      deviationMeters: 120,
+    },
+    position: [120.1234, 30.2345, 120],
+    flightPlan: {
+      home: [120.13, 30.22, 80],
+    },
+    control: {
+      apply: false,
+      radiusMeters: 500,
+      maxGridCount: 300,
+      ttlSeconds: 1800,
+    },
+    landingSites: [],
+    rescueResources: [],
+    condition: {},
+  }
+})
+
 const networkStatus = computed(() => {
   return isOnline.value ? '运行中' : '网络未连接'
 })
@@ -58,6 +100,8 @@ onBeforeUnmount(() => {
     window.clearInterval(clockTimer)
     clockTimer = null
   }
+  simulationTimers.value.forEach(t => window.clearTimeout(t))
+  simulationTimers.value = []
   window.removeEventListener('online', handleOnline)
   window.removeEventListener('offline', handleOffline)
 })
@@ -243,6 +287,349 @@ function handleDeleteFence(id) {
   }
 }
 
+function handleStartEventSimulation() {
+  const routes = props.routeData || []
+  if (routes.length === 0) return
+  selectedSimulationRouteIds.value = routes.map(route => route.id)
+  isSimulationModalVisible.value = true
+}
+
+function handleStopEventSimulation() {
+  simulationTimers.value.forEach(t => window.clearTimeout(t))
+  simulationTimers.value = []
+  simulationParamsMap.value = {}
+
+  if (cesiumMapRef.value) {
+    if (typeof cesiumMapRef.value.stopUavAnimation === 'function') {
+      cesiumMapRef.value.stopUavAnimation()
+    }
+    if (typeof cesiumMapRef.value.clearEventVisualization === 'function') {
+      cesiumMapRef.value.clearEventVisualization()
+    }
+    if (typeof cesiumMapRef.value.clearGridVisual === 'function') {
+      cesiumMapRef.value.clearGridVisual()
+    }
+  }
+
+  emit('stop-event-simulation')
+}
+
+function handleCloseSimulationModal() {
+  isSimulationModalVisible.value = false
+}
+
+function toggleSimulationRoute(routeId) {
+  const index = selectedSimulationRouteIds.value.indexOf(routeId)
+  if (index >= 0) {
+    selectedSimulationRouteIds.value.splice(index, 1)
+  } else {
+    selectedSimulationRouteIds.value.push(routeId)
+  }
+}
+
+function resetSimulationParams() {
+  simulationParams.value.user = {
+    level: 14,
+    warningRadiusMeters: 500,
+    maxRouteReturnGrids: 300,
+    maxRouteCheckGrids: 500,
+    persist: true,
+  }
+  simulationParams.value.auto = {
+    eventType: 'lost_contact',
+    telemetry: {
+      speed: 16,
+      battery: 28,
+      linkLostSeconds: 90,
+      deviationMeters: 120,
+    },
+    position: [120.1234, 30.2345, 120],
+    flightPlan: {
+      home: [120.13, 30.22, 80],
+    },
+    control: {
+      apply: false,
+      radiusMeters: 500,
+      maxGridCount: 300,
+      ttlSeconds: 1800,
+    },
+    landingSites: [],
+    rescueResources: [],
+    condition: {},
+  }
+}
+
+function haversineDistanceMeters(a, b) {
+  if (!a || !b) return Number.POSITIVE_INFINITY
+  const toRad = deg => (deg * Math.PI) / 180
+  const R = 6371000
+  const dLat = toRad(b[1] - a[1])
+  const dLon = toRad(b[0] - a[0])
+  const lat1 = toRad(a[1])
+  const lat2 = toRad(b[1])
+  const sinLat = Math.sin(dLat / 2)
+  const sinLon = Math.sin(dLon / 2)
+  const c = 2 * Math.asin(Math.sqrt(sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon))
+  return R * c
+}
+
+function offsetPointMeters(point, eastMeters, northMeters) {
+  if (!point) return null
+  const latRad = (point[1] * Math.PI) / 180
+  const deltaLat = northMeters / 111320
+  const deltaLon = eastMeters / (111320 * Math.cos(latRad) || 1)
+  return [point[0] + deltaLon, point[1] + deltaLat, point[2] ?? 120]
+}
+
+function extractRoutePoints(route) {
+  const path = Array.isArray(route?.path) ? route.path : []
+  return path.flatMap(item => {
+    if (Array.isArray(item) && item.length >= 2 && Number.isFinite(Number(item[0])) && Number.isFinite(Number(item[1]))) {
+      return [[Number(item[0]), Number(item[1]), Number(item[2] ?? 120)]]
+    }
+    if (item && typeof item === 'object') {
+      const lon = Number(item.lon ?? item.lng ?? item.longitude)
+      const lat = Number(item.lat ?? item.latitude)
+      if (Number.isFinite(lon) && Number.isFinite(lat)) {
+        return [[lon, lat, Number(item.height ?? item.alt ?? item.z ?? 120)]]
+      }
+    }
+    return []
+  })
+}
+
+async function resolveRouteAnchorPoint(route) {
+  const routePoints = extractRoutePoints(route)
+  if (routePoints.length > 0) return routePoints[Math.floor(routePoints.length / 2)]
+
+  const codes = Array.isArray(route?.path) ? route.path : []
+  for (const code of codes) {
+    const boundary = await fetchGridBoundaryByCode(code)
+    const center = boundary?.center
+    if (Array.isArray(center) && center.length >= 2) {
+      return [Number(center[0]), Number(center[1]), Number(center[2] ?? 120)]
+    }
+  }
+  return null
+}
+
+async function buildAutoSimulationParams(routeIds) {
+  const routes = (props.routeData || []).filter(route => routeIds.includes(route.id))
+  const selectedRoute = routes[0] || null
+  const anchorPoint = selectedRoute ? await resolveRouteAnchorPoint(selectedRoute) : null
+  const onRoute = !!anchorPoint && routeIds.length > 0
+  const useOffset = onRoute && Math.random() > 0.55
+  const eventPoint = useOffset ? offsetPointMeters(anchorPoint, 120, 60) : anchorPoint
+  const deviationMeters = eventPoint && anchorPoint ? Math.round(haversineDistanceMeters(anchorPoint, eventPoint)) : 0
+  const safeDeviation = Math.min(200, deviationMeters)
+  const autoEventType = safeDeviation === 0 ? 'lost_contact' : (safeDeviation < 80 ? 'deviation' : 'low_battery')
+
+  return {
+    eventType: autoEventType,
+    telemetry: {
+      speed: Math.max(5, Math.min(25, 12 + Math.round(Math.random() * 6))),
+      battery: Math.max(10, Math.min(100, safeDeviation === 0 ? 42 : 26)),
+      linkLostSeconds: Math.max(0, Math.min(600, safeDeviation === 0 ? 30 : 90)),
+      deviationMeters: safeDeviation,
+    },
+    position: eventPoint || [120.1234, 30.2345, 120],
+    flightPlan: {
+      home: [120.13, 30.22, 80],
+    },
+    control: {
+      apply: false,
+      radiusMeters: 500,
+      maxGridCount: 300,
+      ttlSeconds: 1800,
+    },
+    landingSites: [],
+    rescueResources: [],
+    condition: {},
+  }
+}
+
+async function handleConfirmSimulation() {
+  if (selectedSimulationRouteIds.value.length === 0) return
+
+  simulationTimers.value.forEach(t => window.clearTimeout(t))
+  simulationTimers.value = []
+  simulationParamsMap.value = {}
+
+  if (cesiumMapRef.value) {
+    if (typeof cesiumMapRef.value.stopUavAnimation === 'function') {
+      cesiumMapRef.value.stopUavAnimation()
+    }
+    if (typeof cesiumMapRef.value.clearEventVisualization === 'function') {
+      cesiumMapRef.value.clearEventVisualization()
+    }
+    if (typeof cesiumMapRef.value.clearGridVisual === 'function') {
+      cesiumMapRef.value.clearGridVisual()
+    }
+  }
+
+  const routeIds = [...selectedSimulationRouteIds.value]
+  const routes = (props.routeData || []).filter(route => routeIds.includes(route.id))
+
+  const allAutoParams = {}
+  for (const routeId of routeIds) {
+    const auto = await buildAutoSimulationParams([routeId])
+    allAutoParams[routeId] = auto
+    simulationParamsMap.value[routeId] = {
+      user: { ...simulationParams.value.user },
+      auto,
+    }
+  }
+
+  const firstAuto = allAutoParams[routeIds[0]]
+  emit('start-event-simulation', {
+    routeIds,
+    params: JSON.parse(JSON.stringify({
+      user: { ...simulationParams.value.user },
+      auto: firstAuto,
+    }))
+  })
+
+  routes.forEach((route, index) => {
+    if (cesiumMapRef.value && typeof cesiumMapRef.value.startUavAnimation === 'function') {
+      cesiumMapRef.value.startUavAnimation(route.path, route.id, index === 0)
+    }
+
+    const delay = 3000 + Math.random() * 5000
+    const timer = window.setTimeout(() => {
+      const willTrigger = Math.random() < 0.8
+      if (willTrigger) {
+        triggerAnomaly(route.id)
+      }
+    }, delay)
+    simulationTimers.value.push(timer)
+  })
+
+  isSimulationModalVisible.value = false
+}
+
+async function triggerAnomaly(routeId) {
+  if (!cesiumMapRef.value) return
+
+  const currentPosition = typeof cesiumMapRef.value.getUavCurrentPosition === 'function'
+    ? cesiumMapRef.value.getUavCurrentPosition(routeId)
+    : null
+
+  if (typeof cesiumMapRef.value.stopUavAnimationByRouteId === 'function') {
+    cesiumMapRef.value.stopUavAnimationByRouteId(routeId)
+  }
+
+  const params = simulationParamsMap.value[routeId]
+  if (!params) return
+
+  const position = currentPosition || params.auto.position
+
+  const requestBody = {
+    position,
+    eventType: params.auto.eventType,
+    level: params.user.level,
+    eventTime: params.user.eventTime || Date.now(),
+    telemetry: params.auto.telemetry,
+    cruisingSpeed: params.user.cruisingSpeed,
+    groundRescueSpeed: params.user.groundRescueSpeed,
+    flightPlan: params.auto.flightPlan,
+    landingSites: params.auto.landingSites,
+    rescueResources: params.auto.rescueResources,
+    condition: params.auto.condition,
+    control: params.auto.control,
+    warningRadiusMeters: params.user.warningRadiusMeters,
+    maxRouteReturnGrids: params.user.maxRouteReturnGrids,
+    maxRouteCheckGrids: params.user.maxRouteCheckGrids,
+    persist: params.user.persist,
+  }
+
+  try {
+    const headers = new Headers()
+    headers.append('Content-Type', 'application/json')
+    headers.append('X-API-Key', import.meta.env.VITE_API_KEY || '')
+
+    const resp = await fetch('/api/emergency/handle', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    })
+
+    const data = await resp.json()
+    if (data?.status === 'success' && data?.data) {
+      await visualizeEmergencyResponse(data.data)
+      emit('anomaly-triggered', {
+        routeId,
+        routeName: (props.routeData || []).find(r => r.id === routeId)?.name || '',
+        eventType: params.auto.eventType,
+        position,
+        requestBody,
+        responseData: data.data,
+      })
+    } else {
+      console.warn('[MonitoringScreen] 应急接口返回异常:', data?.message)
+    }
+  } catch (err) {
+    console.error('[MonitoringScreen] 应急接口调用失败:', err)
+  }
+}
+
+async function visualizeEmergencyResponse(responseData) {
+  if (!cesiumMapRef.value) return
+
+  const allCells = []
+
+  if (responseData.eventGrid) {
+    allCells.push({
+      code: responseData.eventGrid.code,
+      center: responseData.eventGrid.center,
+      bounds: {
+        west: responseData.eventGrid.minlon,
+        east: responseData.eventGrid.maxlon,
+        south: responseData.eventGrid.minlat,
+        north: responseData.eventGrid.maxlat,
+        top: responseData.eventGrid.top,
+        bottom: responseData.eventGrid.bottom,
+      },
+      color: '#ef4444',
+      level: responseData.warningArea?.gridLevel,
+    })
+  }
+
+  const warningArea = responseData.warningArea
+  if (warningArea && Array.isArray(warningArea.sampleGrids)) {
+    const codes = warningArea.sampleGrids
+    const limit = Number(warningArea.sampleGridCount) || codes.length
+    for (const code of codes.slice(0, limit)) {
+      const cell = await fetchGridBoundaryByCode(code)
+      const normalized = normalizeGridBoundary(cell)
+      if (normalized) {
+        allCells.push({
+          code: normalized.code,
+          center: normalized.center,
+          bounds: normalized.bounds,
+          color: '#f59e0b',
+          level: warningArea.gridLevel,
+        })
+      }
+    }
+  }
+
+  if (allCells.length > 0 && typeof cesiumMapRef.value.drawGridBoundary === 'function') {
+    cesiumMapRef.value.drawGridBoundary({ cells: allCells })
+  }
+
+  if (typeof cesiumMapRef.value.drawEventVisualization === 'function') {
+    const eg = responseData.eventGrid
+    cesiumMapRef.value.drawEventVisualization({
+      eventPoint: eg?.center ? {
+        lon: eg.center[0],
+        lat: eg.center[1],
+        height: eg.center[2] || 0,
+      } : null,
+      warningArea: warningArea || null,
+    })
+  }
+}
+
 function handleSaveFence(fences) {
   console.log('保存围栏到后端:', fences)
 }
@@ -341,7 +728,10 @@ const fenceStats = computed(() => {
         <div class="route-list-section">
           <div class="panel-header">
             <span class="panel-title">已展示航线</span>
-            <span class="panel-count">{{ routeStats.total }}</span>
+            <div class="route-header-actions">
+              <button class="action-btn simulate-btn" type="button" @click="handleStartEventSimulation">异常模拟</button>
+              <button class="action-btn exit-btn" type="button" @click="handleStopEventSimulation">退出</button>
+            </div>
           </div>
           <div class="route-list">
             <div v-if="routeStats.total === 0" class="empty-list">
@@ -380,6 +770,77 @@ const fenceStats = computed(() => {
         </div>
       </div>
     </main>
+
+    <div v-if="isSimulationModalVisible" class="simulation-modal-mask" @click.self="handleCloseSimulationModal">
+      <div class="simulation-modal" role="dialog" aria-modal="true" aria-labelledby="simulation-modal-title">
+        <div class="simulation-modal-header">
+          <div id="simulation-modal-title" class="simulation-modal-title">异常模拟参数设置</div>
+          <button class="modal-btn secondary" type="button" @click="handleCloseSimulationModal">关闭</button>
+        </div>
+
+        <div class="simulation-modal-body">
+          <div class="simulation-section">
+            <div class="section-title">1. 选择用于异常模拟的航线</div>
+            <div v-if="routeStats.total === 0" class="param-tip">当前没有已展示航线，无法执行异常模拟。</div>
+            <div v-else class="route-select-grid">
+              <label
+                v-for="route in props.routeData"
+                :key="route.id"
+                class="route-select-item"
+                :class="{ selected: selectedSimulationRouteIds.includes(route.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedSimulationRouteIds.includes(route.id)"
+                  @change="toggleSimulationRoute(route.id)"
+                />
+                <div class="route-select-main">
+                  <span class="route-select-name">{{ route.name || '航线 ' + route.id }}</span>
+                  <span class="route-select-meta">ID: {{ route.id }} · 格网 {{ route.path?.length || 0 }}</span>
+                </div>
+              </label>
+            </div>
+            <div class="param-tip">支持选择一条或多条航线参与异常模拟；没有航线时模拟按钮不可执行。</div>
+          </div>
+
+          <div class="simulation-section">
+            <div class="section-title">2. 用户手动输入参数</div>
+            <div class="param-grid single-grid">
+              <div class="param-field">
+                <label>网格层级</label>
+                <input v-model.number="simulationParams.user.level" type="number" min="1" max="21" />
+              </div>
+              <div class="param-field">
+                <label>警戒半径 (m)</label>
+                <input v-model.number="simulationParams.user.warningRadiusMeters" type="number" min="0" />
+              </div>
+              <div class="param-field">
+                <label>返航格网上限</label>
+                <input v-model.number="simulationParams.user.maxRouteReturnGrids" type="number" min="1" />
+              </div>
+              <div class="param-field">
+                <label>路径检查格网上限</label>
+                <input v-model.number="simulationParams.user.maxRouteCheckGrids" type="number" min="1" />
+              </div>
+              <div class="param-field">
+                <label>是否落库</label>
+                <select v-model="simulationParams.user.persist">
+                  <option :value="true">true</option>
+                  <option :value="false">false</option>
+                </select>
+              </div>
+            </div>
+            <div class="param-tip">事件时间、巡航速度、地面救援速度、事件类型、电量、失联秒数、偏航距离等均由系统自动模拟，不在此窗口中展示。</div>
+          </div>
+        </div>
+
+        <div class="simulation-modal-footer">
+          <button class="modal-btn secondary" type="button" @click="resetSimulationParams">重置默认值</button>
+          <button class="modal-btn secondary" type="button" @click="handleCloseSimulationModal">取消</button>
+          <button class="modal-btn primary" type="button" :disabled="routeStats.total === 0 || selectedSimulationRouteIds.length === 0" @click="handleConfirmSimulation">确认</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -645,6 +1106,42 @@ const fenceStats = computed(() => {
   font-size: 14px;
   font-weight: 600;
   color: #2d3748;
+  flex-shrink: 0;
+}
+
+.route-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.action-btn {
+  padding: 5px 10px;
+  border: 1px solid rgba(90, 150, 200, 0.7);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1e4a6e;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.action-btn:hover {
+  background: #ffffff;
+  border-color: #4a90c2;
+  box-shadow: 0 2px 6px rgba(60, 120, 180, 0.15);
+}
+
+.simulate-btn {
+  color: #b45309;
+}
+
+.exit-btn {
+  color: #b91c1c;
 }
 
 .panel-count {
@@ -652,6 +1149,206 @@ const fenceStats = computed(() => {
   font-weight: bold;
   color: #2b6cb0;
   font-family: monospace;
+}
+
+.simulation-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.simulation-modal {
+  width: min(920px, calc(100vw - 40px));
+  max-height: min(86vh, 920px);
+  background: #f8fbff;
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.28);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.simulation-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  background: linear-gradient(90deg, #1a365d, #2c5282);
+  color: #fff;
+}
+
+.simulation-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.simulation-modal-body {
+  padding: 18px 20px 10px;
+  overflow: auto;
+}
+
+.simulation-section {
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e3a5f;
+  margin-bottom: 10px;
+}
+
+.route-select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.route-select-item {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  display: flex;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.route-select-item.selected {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+
+.route-select-item.disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.route-select-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.route-select-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.route-select-meta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.param-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.param-group {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.param-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 10px;
+}
+
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.param-grid.single-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.param-grid.single-grid .param-field:last-child {
+  grid-column: span 2;
+}
+
+.param-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.param-field label {
+  font-size: 12px;
+  color: #475569;
+}
+
+.param-field input,
+.param-field select,
+.param-field textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: #fff;
+  color: #0f172a;
+  outline: none;
+}
+
+.param-field textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.param-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.simulation-modal-footer {
+  padding: 14px 20px 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  background: #fff;
+}
+
+.modal-btn {
+  min-width: 88px;
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.modal-btn.secondary {
+  background: #fff;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+
+.modal-btn.primary {
+  background: #2563eb;
+  color: #fff;
 }
 
 .route-list {

@@ -14,6 +14,7 @@ const infoManagementPanelRef = ref(null)
 const cesiumMapRef = ref(null)
 const monitoringScreenRef = ref(null)
 const pendingEventVisualization = ref(null)
+const pendingAnomalyEvents = ref([])
 
 const currentPage = ref('main') // 'main' | 'monitoring' | 'info'
 
@@ -220,6 +221,14 @@ function handleVisualizeEvent(payload) {
   }
 }
 
+function handleAnomalyTriggered(payload) {
+  if (!payload) return
+  pendingAnomalyEvents.value = [...pendingAnomalyEvents.value, payload]
+  if (infoManagementPanelRef.value && typeof infoManagementPanelRef.value.addAnomalyEvent === 'function') {
+    infoManagementPanelRef.value.addAnomalyEvent(payload)
+  }
+}
+
 // 处理地图框选开始
 function handleBoxSelectStart() {
   console.log('[DataScreen] 地图框选开始')
@@ -367,6 +376,7 @@ function handleGetViewBounds() {
         :event-visualization="pendingEventVisualization"
         @switch_page="handleSwitchPage"
         @visualize-event="handleVisualizeEvent"
+        @anomaly-triggered="handleAnomalyTriggered"
       />
     </div>
 

@@ -2054,6 +2054,196 @@ function clearEventVisualization() {
   })
 }
 
+// ==================== UAV 飞行动画 ====================
+
+const uavAnimState = {
+  items: [],
+  frameId: null,
+  running: false,
+}
+
+function startUavAnimation(pathData, routeId, flyCamera = true) {
+  if (!viewer || !pathData || !Array.isArray(pathData) || pathData.length === 0) return
+
+  const centers = []
+  for (const grid of pathData) {
+    if (grid.center && Array.isArray(grid.center) && grid.center.length >= 2) {
+      const h = Number(grid.center[2])
+        || ((Number(grid.top) || 0) + (Number(grid.bottom) || 0)) / 2
+        || 120
+      centers.push({
+        lon: Number(grid.center[0]),
+        lat: Number(grid.center[1]),
+        height: h,
+      })
+    }
+  }
+
+  if (centers.length < 2) return
+
+  const g0 = pathData[0]
+  const cellLonSpan = Math.abs(Number(g0.maxlon) - Number(g0.minlon))
+  const cellLatSpan = Math.abs(Number(g0.maxlat) - Number(g0.minlat))
+  const midLatRad = ((Number(g0.minlat) + Number(g0.maxlat)) / 2) * Math.PI / 180
+  const cellW = cellLonSpan * 111320 * Math.cos(midLatRad)
+  const cellH = cellLatSpan * 110540
+  const cellSize = Math.max(cellW, cellH, 1)
+  const scale = Math.max(1, cellSize * 0.01)
+
+  const anim = {
+    routeId: routeId || null,
+    centers,
+    idx: 0,
+    t: 0,
+    pos: Cesium.Cartesian3.fromDegrees(centers[0].lon, centers[0].lat, centers[0].height),
+    ori: Cesium.Quaternion.IDENTITY,
+    entity: null,
+    secondsPerGrid: 2,
+    lastTime: performance.now(),
+  }
+
+  anim.entity = viewer.entities.add({
+    id: `uav-sim-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    position: new Cesium.CallbackProperty(() => anim.pos, false),
+    orientation: new Cesium.CallbackProperty(() => anim.ori, false),
+    model: {
+      uri: '/DXY1.glb',
+      scale,
+      minimumPixelSize: 64,
+      maximumScale: 50000,
+    },
+  })
+
+  uavAnimState.items.push(anim)
+
+  if (!uavAnimState.running) {
+    uavAnimState.running = true
+    uavAnimLoop()
+  }
+
+  if (flyCamera) {
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(
+        centers[0].lon,
+        centers[0].lat,
+        centers[0].height + cellSize * 3
+      ),
+      orientation: {
+        heading: 0,
+        pitch: Cesium.Math.toRadians(-45),
+        roll: 0,
+      },
+      duration: 1.5,
+    })
+  }
+}
+
+function uavAnimLoop() {
+  if (!uavAnimState.running) return
+
+  const now = performance.now()
+  let active = false
+
+  for (const a of uavAnimState.items) {
+    if (a.idx >= a.centers.length - 1) continue
+
+    active = true
+    const dt = (now - a.lastTime) / 1000
+    a.lastTime = now
+
+    a.t += dt / a.secondsPerGrid
+
+    while (a.t >= 1 && a.idx < a.centers.length - 1) {
+      a.t -= 1
+      a.idx++
+    }
+
+    if (a.idx >= a.centers.length - 1) {
+      const last = a.centers[a.centers.length - 1]
+      a.pos = Cesium.Cartesian3.fromDegrees(last.lon, last.lat, last.height)
+      const hpr = new Cesium.HeadingPitchRoll(0, 0, 0)
+      a.ori = Cesium.Transforms.headingPitchRollQuaternion(a.pos, hpr)
+      continue
+    }
+
+    const from = a.centers[a.idx]
+    const to = a.centers[a.idx + 1]
+
+    const easeT = a.t * a.t * (3 - 2 * a.t)
+    const lon = from.lon + (to.lon - from.lon) * easeT
+    const lat = from.lat + (to.lat - from.lat) * easeT
+    const h = from.height + (to.height - from.height) * easeT
+
+    a.pos = Cesium.Cartesian3.fromDegrees(lon, lat, h)
+
+    const dLonRad = (to.lon - from.lon) * Math.PI / 180
+    const fromLatRad = from.lat * Math.PI / 180
+    const toLatRad = to.lat * Math.PI / 180
+    const heading = Math.atan2(
+      Math.sin(dLonRad) * Math.cos(toLatRad),
+      Math.cos(fromLatRad) * Math.sin(toLatRad)
+        - Math.sin(fromLatRad) * Math.cos(toLatRad) * Math.cos(dLonRad)
+    )
+    const hpr = new Cesium.HeadingPitchRoll(heading, 0, 0)
+    a.ori = Cesium.Transforms.headingPitchRollQuaternion(a.pos, hpr)
+  }
+
+  if (active) {
+    uavAnimState.frameId = requestAnimationFrame(uavAnimLoop)
+  } else {
+    uavAnimState.running = false
+    uavAnimState.frameId = null
+  }
+}
+
+function stopUavAnimation() {
+  uavAnimState.running = false
+
+  if (uavAnimState.frameId) {
+    cancelAnimationFrame(uavAnimState.frameId)
+    uavAnimState.frameId = null
+  }
+
+  for (const a of uavAnimState.items) {
+    if (viewer && a.entity) {
+      viewer.entities.remove(a.entity)
+    }
+  }
+
+  uavAnimState.items = []
+}
+
+function stopUavAnimationByRouteId(routeId) {
+  if (!routeId) return
+  const idx = uavAnimState.items.findIndex(a => a.routeId === routeId)
+  if (idx < 0) return
+  const anim = uavAnimState.items[idx]
+  if (viewer && anim.entity) {
+    viewer.entities.remove(anim.entity)
+  }
+  uavAnimState.items.splice(idx, 1)
+  if (uavAnimState.items.length === 0) {
+    uavAnimState.running = false
+    if (uavAnimState.frameId) {
+      cancelAnimationFrame(uavAnimState.frameId)
+      uavAnimState.frameId = null
+    }
+  }
+}
+
+function getUavCurrentPosition(routeId) {
+  if (!routeId) return null
+  const anim = uavAnimState.items.find(a => a.routeId === routeId)
+  if (!anim || !anim.pos) return null
+  const cartographic = Cesium.Cartographic.fromCartesian(anim.pos)
+  if (!cartographic) return null
+  return [
+    Number(Cesium.Math.toDegrees(cartographic.longitude).toFixed(6)),
+    Number(Cesium.Math.toDegrees(cartographic.latitude).toFixed(6)),
+    Number(cartographic.height.toFixed(1)),
+  ]
+}
+
 defineExpose({
   flyToPoint,
   clearCenterPoint,
@@ -2084,6 +2274,10 @@ defineExpose({
   getViewBounds,
   drawEventVisualization,
   clearEventVisualization,
+  startUavAnimation,
+  stopUavAnimation,
+  stopUavAnimationByRouteId,
+  getUavCurrentPosition,
 })
 
 onMounted(async () => {
@@ -2205,6 +2399,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopUavAnimation()
   if (handler) {
     handler.destroy()
     handler = null
@@ -2213,8 +2408,6 @@ onBeforeUnmount(() => {
     viewer.destroy()
     viewer = null
   }
-  // 注意：不清除 routeGridEntities，保持数据持久化
-  // 当组件重新挂载时，CesiumMap 会使用这些数据来管理已绘制的航线
 })
 </script>
 
